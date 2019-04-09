@@ -1,0 +1,888 @@
+---
+title: "Project"
+author: "Group15"
+date: "November 19, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+### Loading Libraries
+```{r}
+library(knitr)
+library(ggplot2)
+library(plyr)
+library(dplyr)
+#install.packages("corrplot")
+library(corrplot)
+#install.packages("caret")
+library(caret)
+#install.packages("gridExtra")
+library(gridExtra)
+library(scales)
+install.packages("Rmisc")
+library(Rmisc)
+#install.packages("ggrepel")
+library(ggrepel)
+#install.packages("randomForest")
+library(randomForest)
+#install.packages("psych")
+library(psych)
+#install.packages("xgboost")
+library(xgboost)
+#install.packages("skimr")
+library(skimr)
+#install.packages("glmnet")
+library(glmnet)
+
+```
+
+### Importing Dataset
+```{r}
+
+train <- read.csv("D:/Studies/BUAN 6356 - BA with R/Project/all/train.csv")
+test  <-  read.csv("D:/Studies/BUAN 6356 - BA with R/Project/all/test.csv")
+```
+
+### Exploring given dataset
+```{r}
+# number of observations and variables
+dim(train)
+
+# column names
+colnames(train)
+
+# number of character variables
+sum(sapply(train, typeof) == "character")
+
+# number of integer variables
+sum(sapply(train, typeof) == "integer")
+
+# descriptive statistics of integer variables
+summary(train[,sapply(train, typeof) == "integer"])
+
+# percentage of missing values
+sum(is.na(train))/(nrow(train)*ncol(train))
+
+```
+
+### Combining train and test
+```{r}
+# remove useless variable 'ID'
+train$Id <- NULL
+test$Id <- NULL
+test$SalePrice <- NA
+house <- rbind(train, test)
+View(house)
+
+# check overall information of combined data
+skim(house)
+```
+
+### Exploring dependent variable 'SalePrice'
+```{r}
+# descrptive statistics
+summary(house$SalePrice)
+
+# histrogram
+ggplot(train, aes(x=SalePrice))+
+  geom_histogram(col="black", binwidth = "10000")+
+  scale_x_continuous(breaks = seq(0, 800000, by = 100000), labels = comma)
+
+# correlation between important numeric variables
+sum(sapply(house[,1:80], is.numeric))
+numericVar <- which(sapply(house[,1:80], is.numeric))
+numericVarName <- names(numericVar)
+house.numeric <- house[,numericVar]
+# correlations of all numeric variables
+cor.numeric <- cor(house.numeric, use = "pairwise.complete.obs")
+# sorting correlation with SalePrice in decreasing order 
+cor_sorted <- as.matrix(sort(cor.numeric[,"SalePrice"], decreasing = TRUE))
+# choose correlations which has higher value than 0.5 
+high_cor <- names(which(apply(cor_sorted, 1, function(x) abs(x)>0.5)))
+cor.numeric <- cor.numeric[high_cor,high_cor]
+# plot correlation
+corrplot.mixed(cor.numeric, tl.col="black", tl.pos = "lt")
+
+# we will return after cleaning missing values to discuss highly correlated variables in detail. 
+```
+
+### Cleaning missing values
+```{r}
+na.cols <- which(colSums(is.na(house))>0)
+sort(colSums(sapply(house[na.cols],is.na)),decreasing = T)
+# 1459 NAs are missing values of test, thus total 34 variables has missing values.
+
+# (1) PoolQC
+# lots of NAs because there are many houses without pools
+house$PoolQC[is.na(house$PoolQC)] <- 'None'
+table(house$PoolQC)
+# change characters labels to ordinal for a later use and efficient codings.
+Qualities <- c('None'= 0, 'Po'=1, 'Fa'=2, 'TA'=3, 'Gd'=4, 'Ex'=5)
+house$PoolQC <- as.integer(revalue(house$PoolQC, Qualities))
+table(house$PoolQC)
+
+
+# However, there are three observations having 'None' even though they have values on 'PoolArea'.
+house[(house$PoolQC == 0) & house$PoolArea>0, c('PoolQC', 'PoolArea', 'OverallQual')]
+# we can fill empty values by refering OverallQual and estimate PoolQC.
+house$PoolQC[2421] = '3' # Typical
+house$PoolQC[2504] = '4' # Good
+house$PoolQC[2600] = '2' # Fair
+# check
+house[(house$PoolQC == 0) & house$PoolArea>0, c('PoolQC', 'PoolArea', 'OverallQual')]
+
+
+# (2) Miscellaneous Feature 
+table(house$MiscFeature)
+house$MiscFeature[is.na(house$MiscFeature)] <- 'None'
+# since values are not ordinal, convert it into a factor
+house$MiscFeature <- as.factor(house$MiscFeature)
+
+# (3) Alley
+table(house$Alley)
+house$Alley[is.na(house$Alley)] <- 'None'
+# since values are not ordinal, convert it into a factor
+house$Alley <- as.factor(house$Alley)
+
+
+# (4) Fence
+table(house$Fence)
+house$Fence[is.na(house$Fence)] <- 'None'
+# since values are not ordinal, convert it into a factor
+house$Fence <- as.factor(house$Fence)
+
+house[!is.na(house$SalePrice),] %>%
+  group_by(Fence) %>%
+  summarise(median = median(SalePrice), counts =n())
+# no fence is the best
+
+# (5) FirepalceQu
+table(house$FireplaceQu)
+house$FireplaceQu[is.na(house$FireplaceQu)] <- 'None'
+house$FireplaceQu <- as.integer(revalue(house$FireplaceQu,Qualities))
+table(house$FireplaceQu)
+
+# (6) Lot variables
+# LotFrontage
+table(house$LotFrontage)
+house$LotFrontage[is.na(house$LotFrontage)] <- '0'  
+house$LotFrontage <- as.integer(house$LotFrontage)
+
+# LotShape
+table(house$LotShape)
+sum(is.na(house$LotShape))
+# 0 NA
+# since values are not ordinal, convert it into a factor
+house$LotShape <- as.integer(revalue(house$LotShape, c('IR3'=0, 'IR2'=1, 'IR1'=2, 'Reg'=3)))
+table(house$LotShape)
+
+# LotConfig
+table(house$LotConfig)
+sum(is.na(house$LotConfig))
+# 0 NA
+# since values are not ordinal, convert it into a factor
+house$LotConfig <- as.factor(house$LotConfig)
+
+
+# (7) Garage variables
+
+# GarageYrBlt
+table(house$GarageYrBlt)
+sum(is.na(house$GarageYrBlt))
+# 159 missing garage year built = house year built
+house$GarageYrBlt[is.na(house$GarageYrBlt)] <- house$YearBuilt[is.na(house$GarageYrBlt)]
+sum(is.na(house$GarageYrBlt))
+table(house$GarageYrBlt)
+# since except GarageType, number of NAs of GarageFinish, GarageQual, GarageCond = 159.
+# we should check if they are the same rows or not.
+length(which(is.na(house$GarageType)&is.na(house$GarageFinish)&is.na(house$GarageQual)&is.na(house$GarageCond)))
+# find 2 NAs
+kable(house[!is.na(house$GarageType)& is.na(house$GarageFinish), c('GarageCars','GarageArea','GarageType','GarageCond','GarageQual','GarageFinish')])
+# column 2177 and 2577 does have GarageType data but does not have other Garage variables data.
+# and 2577 turns out that it does not have a garage beacuse GarageCars and GarageArea = NA.
+# we fill 2177's NAs with the most common data(modes)
+house$GarageCond[2127] <- names(sort(table(house$GarageCond), decreasing = T))[1]
+house$GarageQual[2127] <- names(sort(table(house$GarageQual), decreasing = T))[1]
+house$GarageFinish[2127] <- names(sort(table(house$GarageFinish), decreasing = T))[1]
+# check
+kable(house[2127, c('GarageYrBlt','GarageCars','GarageArea','GarageType','GarageCond','GarageQual','GarageFinish')])
+
+#GarageCars and GarageArea
+sum(is.na(house$GarageCars))
+sum(is.na(house$GarageArea))
+# both have one NA =  2577
+kable(house[2577, c('GarageYrBlt','GarageCars','GarageArea','GarageType','GarageCond','GarageQual','GarageFinish')])
+# Since it does not have garage, we should fix it
+house$GarageCars[2577] <- 0
+house$GarageArea[2577] <- 0
+house$GarageType[2577] <- NA
+kable(house[2577, c('GarageYrBlt','GarageCars','GarageArea','GarageType','GarageCond','GarageQual','GarageFinish')])
+
+# GarageType
+sum(is.na(house$GarageType))
+house$GarageType[is.na(house$GarageType)] <- 'No Garage'
+# since values are not ordinal, convert it into a factor
+house$GarageType <- as.factor(house$GarageType)
+table(house$GarageType)
+
+# GarageFinish
+sum(is.na(house$GarageFinish))
+house$GarageFinish[is.na(house$GarageFinish)] <- 'No Garage'
+# values are ordinal
+house$GarageFinish <- as.integer(revalue(house$GarageFinish,c('No Garage'=0, 'Unf'=1,'RFn'=2, 'Fin'=3)))
+table(house$GarageFinish)
+
+# GarageQual
+sum(is.na(house$GarageQual))
+house$GarageQual[is.na(house$GarageQual)] <- 'None'
+# values are ordinal
+house$GarageQual <- as.integer(revalue(house$GarageQual,Qualities))
+table(house$GarageQual)
+
+# GarageCond
+sum(is.na(house$GarageCond))
+house$GarageCond[is.na(house$GarageCond)] <- 'None'
+house$GarageCond <- as.integer(revalue(house$GarageCond,Qualities))
+table(house$GarageCond)
+
+
+# (8) Basement variables
+sort(colSums(sapply(house[na.cols],is.na)),decreasing = T)
+# 79~82 NAs can be same row's data. Let's check it!
+length(which(is.na(house$BsmtCond)&is.na(house$BsmtExposure)&is.na(house$BsmtQual)&is.na(house$BsmtFinType2)&is.na(house$BsmtFinType1)))
+# 79 NAs are in same rows
+house[!is.na(house$BsmtFinType1)& (is.na(house$BsmtCond)|is.na(house$BsmtExposure)|is.na(house$BsmtQual)|is.na(house$BsmtFinType2)), c('BsmtCond','BsmtExposure','BsmtQual','BsmtFinType2','BsmtFinType1')]
+# impute modes in the empty data
+house$BsmtFinType2[333] <- names(sort(table(house$BsmtFinType2), decreasing = T))[1]
+house$BsmtExposure[c(949,1488,2349)] <- names(sort(table(house$BsmtExposure),decreasing = T))[1]
+house$BsmtCond[c(2041,2186,2525)] <- names(sort(table(house$BsmtCond),decreasing = T))[1]
+house$BsmtQual[c(2218,2219)] <- names(sort(table(house$BsmtQual), decreasing = T))[1]
+
+#BsmtQual
+sum(is.na(house$BsmtQual))
+table(house$BsmtQual)
+house$BsmtQual[is.na(house$BsmtQual)] <- 'None'
+# Ordinal Data
+house$BsmtQual<- as.integer(revalue(house$BsmtQual,Qualities))
+table(house$GarageCond)
+
+#BsmtCond
+sum(is.na(house$BsmtCond))
+table(house$BsmtCond)
+house$BsmtCond[is.na(house$BsmtCond)] <- 'None'
+# Ordinal Data
+house$BsmtCond<- as.integer(revalue(house$BsmtCond,Qualities))
+table(house$GarageCond)
+
+#BsmtExposure
+sum(is.na(house$BsmtExposure))
+table(house$BsmtExposure)
+house$BsmtExposure[is.na(house$BsmtExposure)] <- 'None'
+# Ordinal Data
+house$BsmtExposure <- as.integer(revalue(house$BsmtExposure, c('None'=0, 'No'=1, 'Mn'=2,'Av'=3,'Gd'=4)))
+table(house$BsmtExposure)
+
+#BsmtFinType1
+sum(is.na(house$BsmtFinType1))
+table(house$BsmtFinType1)
+house$BsmtFinType1[is.na(house$BsmtFinType1)] <- 'None'
+# Ordinal Data
+FinType <- c('None'=0, 'Unf'=1, 'LwQ'=2, 'Rec'=3, 'BLQ'=4, 'ALQ'=5, 'GLQ'=6)
+house$BsmtFinType1 <- as.integer(revalue(house$BsmtFinType1, FinType))
+table(house$BsmtFinType1)
+
+#BsmtFinType2
+sum(is.na(house$BsmtFinType2))
+table(house$BsmtFinType2)
+house$BsmtFinType2[is.na(house$BsmtFinType2)] <- 'None'
+# Ordinal Data
+FinType <- c('None'=0, 'Unf'=1, 'LwQ'=2, 'Rec'=3, 'BLQ'=4, 'ALQ'=5, 'GLQ'=6)
+house$BsmtFinType2 <- as.integer(revalue(house$BsmtFinType2, FinType))
+table(house$BsmtFinType2)
+
+house[(is.na(house$BsmtFullBath)|is.na(house$BsmtHalfBath)|is.na(house$BsmtFinSF1)|is.na(house$BsmtFinSF2)|is.na(house$BsmtUnfSF)|is.na(house$TotalBsmtSF)), c('BsmtQual', 'BsmtFullBath', 'BsmtHalfBath', 'BsmtFinSF1', 'BsmtFinSF2', 'BsmtUnfSF', 'TotalBsmtSF')]
+
+#BsmtFullBath
+table(house$BsmtFullBath)
+house$BsmtFullBath[c(2121,2189)] <- 0 
+table(house$BsmtFullBath)
+sum(is.na(house$BsmtFullBath))
+
+#BsmtHalfBath
+table(house$BsmtHalfBath)
+house$BsmtHalfBath[c(2121,2189)] <- 0 
+table(house$BsmtHalfBath)
+sum(is.na(house$BsmtHalfBath))
+
+#BsmtFinSF1
+house$BsmtFinSF1[2121] <- 0 
+sum(is.na(house$BsmtFinSF1))
+
+#BsmtFinSF2
+house$BsmtFinSF2[2121] <- 0 
+sum(is.na(house$BsmtFinSF2))
+
+#BsmtUnfSF
+house$BsmtUnfSF[2121] <- 0 
+sum(is.na(house$BsmtUnfSF))
+
+#TotalBsmtSF
+house$TotalBsmtSF[2121] <- 0 
+sum(is.na(house$TotalBsmtSF))
+
+
+# (9) Mansonry variables
+sort(colSums(sapply(house[na.cols],is.na)),decreasing = T)
+# check if 23~24 observations are the same
+length(which(is.na(house$MasVnrType)&is.na(house$MasVnrArea)))
+# fill NA with the mode
+house[!is.na(house$MasVnrArea)&is.na(house$MasVnrType),c('MasVnrType','MasVnrArea')]
+table(house$MasVnrType)
+house$MasVnrType[2611] <- names(sort(table(house$MasVnrType), decreasing = T))[1]
+
+#MasVnrType
+sum(is.na(house$MasVnrType))
+house$MasVnrType[is.na(house$MasVnrType)] <- 'None'
+table(house$MasVnrType)
+#it seems MasVnrType is ordinal
+house[!is.na(house$SalePrice),]%>%
+  group_by(MasVnrType) %>%
+  summarise(median = median(SalePrice), counts=n())
+#Median SalePrice: BrkCmn < None < BrkFace < Stone
+house$MasVnrType <- as.integer(revalue(house$MasVnrType, c('BrkCmn'=0,'None'=0,'BrkFace'=1, 'Stone'=2)))
+sum(table(house$MasVnrType))
+
+#MasVnrArea
+sum(is.na(house$MasVnrArea))
+house$MasVnrArea[is.na(house$MasVnrArea)] <- 0
+sum(is.na(house$MasVnrArea))
+
+#(10) MS Zoning
+sum(is.na(house$MSZoning))
+# 4 NAs, fill with mode
+table(house$MSZoning)
+house$MSZoning[is.na(house$MSZoning)] <- names(sort(table(house$MSZoning),decreasing = T))[1]
+sum(is.na(house$MSZoning))
+house$MSZoning <- as.factor(house$MSZoning)
+table(house$MSZoning)
+
+#(11) Kitchen variables
+# KitchenQual
+sum(is.na(house$KitchenQual))
+table(house$KitchenQual)
+house$KitchenQual[is.na(house$KitchenQual)] <- names(sort(table(house$KitchenQual),decreasing = T))[1]
+sum(is.na(house$KitchenQual))
+house$KitchenQual <- as.integer(revalue(house$KitchenQual, Qualities))
+table(house$KitchenQual)
+
+# KitchenAbvGr
+sum(is.na(house$KitchenAbvGr))
+# 0 NA
+table(house$KitchenAbvGr)
+
+# (12) Utilties
+sum(is.na(house$Utilities))
+# 2 NAs
+table(house$Utilities)
+house$Utilities[is.na(house$Utilities)] <- 'AllPub'
+house$Utilities <- as.factor(house$Utilities)
+
+# (13) Home Functionality
+sum(is.na(house$Functional))
+# 2 NAs
+table(house$Functional)
+# Fill with mode
+house$Functional[is.na(house$Functional)] <- names(sort(table(house$Functional), decreasing = T))[1]
+# ordinal data
+house$Functional <- as.integer(revalue(house$Functional,c('Sal'=0,'Sev'=1, 'Maj2'=2, 'Maj1'=3,'Mod'=4, 'Min2'=5, 'Min1'=6, 'Typ'=7)))
+table(house$Functional)
+
+#(14) Exterior variables
+# Exterior1st
+sort(colSums(sapply(house[na.cols],is.na)),decreasing = T)
+table(house$Exterior1st)
+house$Exterior1st[is.na(house$Exterior1st)] <- names(sort(-table(house$Exterior1st)))[1]
+house$Exterior1st <- as.factor(house$Exterior1st)
+
+# Exterior2nd
+table(house$Exterior2nd)
+house$Exterior2nd[is.na(house$Exterior2nd)] <- names(sort(-table(house$Exterior2nd)))[1]
+house$Exterior2nd <- as.factor(house$Exterior2nd)
+
+# ExterQual
+sum(is.na(house$ExterQual))
+# 0 NA
+table(house$ExterQual)
+# ordinal data
+house$ExterQual <- as.integer(revalue(house$ExterQual, Qualities))
+table(house$ExterQual)
+
+# ExterCond
+sum(is.na(house$ExterCond))
+# 0 NA
+table(house$ExterCond)
+# ordinal data
+house$ExterCond <- as.integer(revalue(house$ExterCond, Qualities))
+table(house$ExterCond)
+
+#(15) Electrical system
+sum(is.na(house$Electrical))
+# 1 NA
+table(house$Electrical)
+house$Electrical[is.na(house$Electrical)] <- names(sort(-table(house$Electrical)))[1]
+house$Electrical <- as.factor(house$Electrical)
+table(house$Electrical)
+
+#(16) SaleType 
+sum(is.na(house$SaleType))
+# 1 NA
+table(house$SaleType)
+house$SaleType[is.na(house$SaleType)] <- names(sort(-table(house$SaleType)))[1]
+house$SaleType <- as.factor(house$SaleType)
+table(house$SaleType)
+
+# Sale Condition
+sum(is.na(house$SaleCondition))
+# 0 NA
+table(house$SaleCondition)
+house$SaleCondition <- as.factor(house$SaleCondition)
+table(house$SaleCondition)
+
+
+```
+
+### Massaging Character Variables
+```{r}
+# All NAs are gone, however we should massage some character variables
+charvar <- names(house[,sapply(house, is.character)])
+charvar
+
+# (1) Foundation
+table(house$Foundation)
+# not ordinal
+house$Foundation <- as.factor(house$Foundation)
+
+# (2) Heating and Airconditioning
+table(house$Heating)
+# not ordinal
+house$Heating <- as.factor(house$Heating)
+
+table(house$HeatingQC)
+# ordinal
+house$HeatingQC <- as.integer(revalue(house$HeatingQC, Qualities))
+table(house$HeatingQC)
+
+table(house$CentralAir)
+# can change No -> 0, Yes -> 1
+house$CentralAir <- as.integer(revalue(house$CentralAir, c('N'=0, 'Y'=1)))
+table(house$CentralAir)
+sum(table(house$CentralAir))
+
+# (3) Roof
+#RoofStyle
+table(house$RoofStyle)
+house$RoofStyle <- as.factor(house$RoofStyle)
+
+#RoofMatl
+table(house$RoofMatl)
+house$RoofMatl <- as.factor(house$RoofMatl)
+
+# (4) Land
+#LandContour
+table(house$LandContour)
+house$LandContour <- as.factor(house$LandContour)
+
+#LandSlope
+table(house$LandSlope)
+# ordinal
+house$LandSlope <- as.integer(revalue(house$LandSlope,c('Sev'=0, 'Mod'=1, 'Gtl'=2)))
+
+# (5) Dwelling
+#BldgType
+table(house$BldgType)
+house$BldgType <-as.factor(house$BldgType)
+
+#HouseStyle
+table(house$HouseStyle)
+house$HouseStyle <- as.factor(house$HouseStyle)
+
+
+#(6) Neighborhood and Conditions
+# Neighborhood
+table(house$Neighborhood)
+house$Neighborhood <- as.factor(house$Neighborhood)
+sum(table(house$Neighborhood))
+
+# Condition1
+table(house$Condition1)
+# not ordinal
+house$Condition1 <- as.factor(house$Condition1)
+
+# Condition2
+table(house$Condition2)
+# not ordinal
+house$Condition2 <- as.factor(house$Condition2)
+
+# (7) Street and Driveway
+#Street
+table(house$Street)
+house$Street <- as.integer(revalue(house$Street,c('Grvl'=0, 'Pave'=1)))
+table(house$Street)
+
+#PavedDrive
+table(house$PavedDrive)
+house$PavedDrive <- as.integer(revalue(house$PavedDrive, c('N'=0, 'P'=1, 'Y'=2)))
+table(house$PavedDrive)
+
+
+```
+
+### Changing numeric values into factors
+```{r}
+#(1) YrSold, MoSold
+table(house$YrSold)
+table(house$MoSold)
+str(house$YrSold)
+str(house$MoSold)
+# they are in integer
+house$YrSold <- as.factor(house$YrSold)
+house$MoSold <- as.factor(house$MoSold)
+
+#(2) MSSubClass
+table(house$MSSubClass)
+str(house$MSSubClass)
+# it is in integer, although it is categorical
+house$MSSubClass <- as.factor(house$MSSubClass)
+```
+
+### Data Visualization
+```{r}
+sum(sapply(house, is.numeric)) # 54 numeric
+sum(sapply(house, is.factor)) # 26 factor
+sum(sapply(house, is.character)) # 0 character variable
+str(house$PoolQC)
+# Correlation
+numericVar <- which(sapply(house, is.numeric))
+house.numeric <- house[,numericVar]
+# correlations of all numeric variables
+cor.numeric <- cor(house.numeric, use = "pairwise.complete.obs")
+# sorting correlation with SalePrice in decreasing order 
+cor_sorted <- as.matrix(sort(cor.numeric[,"SalePrice"], decreasing = TRUE))
+# choose correlations which has higher value than 0.5 
+high_cor <- names(which(apply(cor_sorted, 1, function(x) abs(x)>0.5)))
+cor.numeric <- cor.numeric[high_cor,high_cor]
+# plot correlation
+corrplot.mixed(cor.numeric, tl.col="black", tl.pos = "lt")
+
+# Relationship between OverallQual and SalePrice
+ggplot(house[!is.na(house$SalePrice),], aes(x=factor(OverallQual), y=SalePrice))+
+  geom_boxplot(col='blue') + labs(x='Overall Quality')+
+  scale_y_continuous(breaks = seq(0,800000,by=100000), labels=comma)
+# postive correlation and no extreme outliers.
+
+# Relationship between GrLivArea and SalePrice
+ggplot(house[!is.na(house$SalePrice),], aes(x=GrLivArea, y=SalePrice))+
+  geom_point(col='red') + 
+  geom_smooth(method = lm, se=F, color='black', aes(group=1))+
+  scale_y_continuous(breaks = seq(0,800000,100000), labels=comma)
+
+# Finding important variables via random forest
+set.seed(5)
+rf.house <- randomForest(x= house[1:1460,-80], y= house$SalePrice[1:1460], ntree=100, importance = T)
+imp.rf <- importance(rf.house)
+imp.df <- data.frame(Variables = row.names(imp.rf), MSE=imp.rf[,1])
+imp.df <- imp.df[order(imp.df$MSE, decreasing = T),]
+
+ggplot(imp.df[1:20,], aes(x=reorder(Variables, MSE), y=MSE, fill=MSE))+
+  geom_bar(stat='identity')+ 
+  labs(x='Variables', y='% increase MSE')+
+  coord_flip()+
+  theme(legend.position = "none")
+  
+# (1) GrLivArea
+# scatter plot drawn above
+ggplot(house[!is.na(house$SalePrice),], aes(x=GrLivArea, y=SalePrice))+
+  geom_point(col='red') + 
+  geom_smooth(method = lm, se=F, color='black', aes(group=1))+
+  scale_y_continuous(breaks = seq(0,800000,100000), labels=comma)
+
+# GrLivArea is deeply related to other surface related variables
+g1 <- ggplot(house, aes(x=GrLivArea))+
+  geom_density() + labs(x='GrLivArea: Square Feet Living Area')
+str(house$TotRmsAbvGrd)
+g2 <- ggplot(house, aes(x=as.factor(TotRmsAbvGrd)))+
+  geom_histogram(stat='count') + labs(x='TotRmsAbvGrd: Total Rooms Above Ground')
+str(house$X1stFlrSF)
+g3 <- ggplot(house, aes(x=X1stFlrSF))+
+  geom_density() + labs(x='X1stFlrSF: Square feet First Floor')
+g4 <- ggplot(house, aes(x=X2ndFlrSF))+
+  geom_density() + labs(x='X2ndFlrSF: Square feet First Floor')
+g5 <- ggplot(house, aes(x=TotalBsmtSF))+
+  geom_density() + labs(x='TotalBsmtSF: Square Feet Basement')
+g6 <- ggplot(data= house, aes(x=LotArea)) +
+    geom_density() + labs(x='LotArea: Square feet lot')
+g7 <- ggplot(house, aes(x=LotFrontage)) +
+    geom_density() + labs(x='LotFrontage: Linear feet lot frontage')
+g8 <- ggplot(data= house, aes(x=LowQualFinSF)) +
+    geom_histogram() + labs(x='LowQualFinSF: Low quality square feet 1st & 2nd')
+layout <- matrix(c(1,2,3,4,5,6,7,8),4,2,byrow=TRUE)
+multiplot(g1,g2,g3,g4,g5,g6,g7,g8, layout=layout)
+
+# (2) Neighborhood
+n1 <- ggplot(house[!is.na(house$SalePrice),], aes(x=Neighborhood, y=SalePrice))+
+  geom_bar(stat='summary', fun.y="median", fill='orange')+
+  theme(axis.text.x = element_text(angle=45, hjust=1))+
+  scale_y_continuous(breaks = seq(0,800000,100000), labels=comma)+
+  geom_label(stat='count', aes(label=..count.., y=..count..), size=3)+
+  geom_hline(yintercept = median(house$SalePrice[1:1460]), linetype="dashed",color='black')
+
+n2 <- ggplot(house, aes(x=Neighborhood))+
+  geom_histogram(stat='count', fill='skyblue')+
+  geom_label(stat='count', aes(label=..count.., y=..count..), size=3)+
+  theme(axis.text.x = element_text(angle=45, hjust=1))
+
+grid.arrange(n1,n2)
+
+# (2) OverallQual
+# Boxplot drawn above 
+ggplot(house[!is.na(house$SalePrice),], aes(x=factor(OverallQual), y=SalePrice))+
+  geom_boxplot(col='blue') + labs(x='Overall Quality')+
+  scale_y_continuous(breaks = seq(0,800000,by=100000), labels=comma)
+
+# OverallQual also has deep relationships with other variables
+o1 <- ggplot(house, aes(x=as.factor(OverallQual)))+
+  geom_histogram(stat='count', fill='purple')+ labs(x='OverallQual: Overall Quality')
+o2 <- ggplot(house, aes(x=as.factor(ExterQual)))+
+  geom_histogram(stat='count', fill='purple')+ labs(x='ExterQual: Exterior Quality')
+o3 <- ggplot(house, aes(x=as.factor(BsmtQual)))+
+  geom_histogram(stat='count', fill='purple')+ labs(x='BsmtQual: Basement Quality')
+o4 <- ggplot(house, aes(x=as.factor(KitchenQual)))+
+  geom_histogram(stat='count', fill='purple')+ labs(x='KitchenQual: Kitchen Quality')
+o5 <- ggplot(house, aes(x=as.factor(GarageQual)))+
+  geom_histogram(stat='count', fill='purple')+ labs(x='GarageQual: Garage Quality')
+o6 <- ggplot(house, aes(x=as.factor(FireplaceQu)))+
+  geom_histogram(stat='count', fill='purple')+ labs(x='FireplaceQu: Fireplace Quality')
+o7 <- ggplot(house, aes(x=as.factor(PoolQC)))+
+  geom_histogram(stat='count', fill='purple')+ labs(x='PoolQC: Pool Quality')
+
+layout2 <- matrix(c(1,2,3,4,5,6,7,8), 4,2, byrow = T)
+multiplot(o1,o2,o3,o4,o5,o6,o7, layout=layout2)
+
+# Exterior Quality, Kitchen Quality, Basement Quality and Fireplace Quality seems correlated with Overall Quality
+
+# (3) MSSubClass
+table(house$MSSubClass)
+ms1 <- ggplot(house[!is.na(house$SalePrice),], aes(x=MSSubClass, y=SalePrice))+
+  geom_bar(stat='summary', fun.y='median', fill='darkgreen')+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  scale_y_continuous(breaks = seq(0,800000,100000), labels = comma)+
+  geom_label(stat='count', aes(label=..count.., y= ..count..),size=3)+
+  geom_hline(yintercept = median(house$SalePrice[1:1460], color='black'))
+
+ms2 <- ggplot(house,aes(x=MSSubClass))+
+  geom_histogram(stat='count', fill='darkgreen')+
+  geom_label(stat='count', aes(label=..count.., y=..count..),size=3)+
+  scale_y_continuous(breaks = seq(0,800000,100000), labels = comma)
+
+grid.arrange(ms1,ms2)
+
+# (4) Garage variables
+# there can be multicolinearrity among garage variables.
+
+house$GarageYrBlt[2593] <- 2007 #fix typo
+ga1 <- ggplot(house[house$GarageCars !=0,], aes(x=GarageYrBlt))+
+  geom_histogram() +labs(x='GarageYrBlt')
+ga2 <- ggplot(house, aes(x=as.factor(GarageCars)))+
+  geom_histogram(stat='count', fill='darkgray') +labs(x='GarageCars')
+ga3 <- ggplot(house, aes(x=GarageArea))+ 
+  geom_density()+labs(x='GarageArea')
+ga4 <- ggplot(house, aes(x=GarageCond))+
+  geom_histogram(stat='count', fill='darkgray') +labs(x='GarageCond')
+ga5 <- ggplot(house, aes(x=GarageType)) +
+  geom_histogram(stat='count', fill='darkgray') +labs(x='GarageType')
+ga6 <- ggplot(house, aes(x=as.factor(GarageQual))) +
+  geom_histogram(stat='count', fill='darkgray') +labs(x='GarageQual')
+ga7 <- ggplot(house, aes(x=as.factor(GarageFinish))) +
+  geom_histogram(stat='count', fill='darkgray') +labs(x='GarageFinish')
+
+layout3 <- matrix(c(1,5,5,2,3,8,6,4,7),3,3,byrow=TRUE)
+multiplot(ga1, ga2, ga3, ga4, ga5, ga6, ga7, layout=layout3)
+
+# GarageArea and GarageCars are highly correlated, GarageCond and GarageQual, too.
+
+# (5) Basement variables
+# there can be multicolinearrity among Basement variables.
+
+bs1 <- ggplot(house, aes(x=BsmtFinSF1)) +
+  geom_histogram(fill='pink') + labs(x='BsmtFinSF1: Type 1 finished square feet')
+bs2 <- ggplot(house, aes(x=BsmtFinSF2)) +
+  geom_histogram(fill='pink')+ labs(x='BsmtFinSF2: Type 2 finished square feet')
+bs3 <- ggplot(house, aes(x=BsmtUnfSF)) +
+  geom_histogram(fill='pink')+ labs(x='BsmtUnfSF: Unfinished square feet')
+bs4 <- ggplot(house, aes(x=as.factor(BsmtFinType1))) +
+  geom_histogram(stat='count',fill='pink')+ labs(x='BsmtFinType1: Rating of Type 1 finished area')
+bs5 <- ggplot(house, aes(x=as.factor(BsmtFinType2))) +
+  geom_histogram(stat='count',fill='pink')+ labs(x='BsmtFinType2: Rating of Type 2 finished area')
+bs6 <- ggplot(house, aes(x=as.factor(BsmtQual))) +
+  geom_histogram(stat='count',fill='pink')+ labs(x='BsmtQual: Height of the basement')
+bs7 <- ggplot(house, aes(x=as.factor(BsmtCond))) +
+  geom_histogram(stat='count',fill='pink')+ labs(x='BsmtCond: Rating of general condition')
+bs8 <- ggplot(house, aes(x=as.factor(BsmtExposure))) +
+  geom_histogram(stat='count',fill='pink')+ labs(x='BsmtExposure: Walkout or garden level walls')
+layout4 <- matrix(c(1,2,3,4,5,9,6,7,8),3,3,byrow=TRUE)
+multiplot(bs1, bs2, bs3, bs4, bs5, bs6, bs7, bs8, layout=layout4)
+```
+### Combining features
+```{r}
+# (1) Total Number of Bathrooms
+# 4 bathroom variables can be combined as one variable
+house$TotBath <- house$FullBath + (house$HalfBath*0.5) + house$BsmtFullBath + (house$BsmtHalfBath*0.5)
+
+tb1 <- ggplot(house[!is.na(house$SalePrice),], aes(x=as.factor(TotBath), y=SalePrice))+
+  geom_point(col='blue')+
+  geom_smooth(method = "lm", se=F, col='black', group=1)+
+  scale_y_continuous(breaks = seq(0,800000,100000), labels = comma)
+
+tb2 <- ggplot(house, aes(x=as.factor(TotBath)))+
+  geom_histogram(stat='count')
+
+grid.arrange(tb1,tb2)
+
+
+# (2) Total Square Feet
+# GrLivAbv and TotalbsmtSF can be one variable
+house$TotalSqFeet = house$GrLivArea + house$TotalBsmtSF
+ggplot(house[!is.na(house$SalePrice),], aes(x=TotalSqFeet, y=SalePrice))+
+  geom_point(col='red')+ 
+  geom_smooth(method = "lm", se=F, col='black', aes(group=1))+
+  scale_y_continuous(breaks = seq(0,800000,100000), labels = comma)+
+  geom_text_repel(aes(label= ifelse(house$GrLivArea[!is.na(house$SalePrice)]>4500, rownames(house),'')))
+
+# new correlation
+cor(house$SalePrice, house$TotalSqFeet, use = "pairwise.complete.obs")
+
+#correlation without outliers
+cor(house$SalePrice[-c(524,1299)], house$TotalSqFeet[-c(524,1299)], use = "pairwise.complete.obs")
+
+```
+
+### Data Modeling Preparation
+```{r}
+# (1) Drop multicolinear variables
+# drop highly correlated two variables
+cor(house$GarageArea, house$GarageCars)
+cor(house$SalePrice, house$GarageArea, use = "pairwise.complete.obs") #0.623 -> drop
+cor(house$SalePrice, house$GarageCars, use = "pairwise.complete.obs") #0.640
+
+cor(house$GarageCond, house$GarageQual)
+cor(house$SalePrice, house$GarageCond, use = "pairwise.complete.obs") #0.263 -> drop
+cor(house$SalePrice, house$GarageQual, use = "pairwise.complete.obs") #0.273
+
+cor(house$TotalBsmtSF, house$X1stFlrSF)
+cor(house$SalePrice, house$TotalBsmtSF, use = "pairwise.complete.obs") #0.613 
+cor(house$SalePrice, house$X1stFlrSF, use = "pairwise.complete.obs") #0.605 -> drop
+
+cor(house$TotRmsAbvGrd, house$GrLivArea)
+cor(house$SalePrice, house$TotRmsAbvGrd, use = "pairwise.complete.obs") #0.533 -> drop
+cor(house$SalePrice, house$GrLivArea, use = "pairwise.complete.obs") #0.708
+
+cor(house$GarageYrBlt, house$YearBuilt)
+cor(house$SalePrice, house$GarageYrBlt, use = "pairwise.complete.obs") #0.508 -> drop
+cor(house$SalePrice, house$YearBuilt, use = "pairwise.complete.obs") #0.522
+
+cor(house$YearRemodAdd, house$YearBuilt)
+cor(house$SalePrice, house$YearRemodAdd, use = "pairwise.complete.obs") #0.507 -> drop
+cor(house$SalePrice, house$YearBuilt, use = "pairwise.complete.obs") #0.522
+
+dropVars <- c('YearRemodAdd','GarageYrBlt', 'GarageArea', 'GarageCond', 'TotalBsmtSF', 'TotRmsAbvGrd')
+house <- house[,!(names(house) %in% dropVars)]
+
+
+# (2) remove outliers
+house <- house[-c(524, 1299),]
+
+# (3) check variables data type
+numericVarNames <- numericVarName[!(numericVarName %in% c('MSSubClass', 'MoSold', 'YrSold', 'SalePrice','OverallQual','OverallCond'))]
+numericVarNames <- append(numericVarNames, c('TotBath', 'TotalSqFeet'))
+df.numeric <- house[,names(house) %in% numericVarNames]
+df.factor <- house[,!names(house) %in% numericVarNames]
+df.factor <- df.factor[, names(df.factor) != 'SalePrice']
+
+# (4) skewness and normailize numeric predictors
+# As a rule of thumb, skewness should be the value between -1 and 1, which considered fairly symmentrical. In order to fix skewness, take the log for all numeric predictors with an absolute skewness greater than 0.8  
+
+for(i in 1:ncol(df.numeric)){
+        if (abs(skew(df.numeric[,i]))>0.8){
+                df.numeric[,i] <- log(df.numeric[,i] +1) #for values of zero
+        }
+}
+# check the normality
+PreNum <- preProcess(df.numeric, method=c("center","scale"))
+print(PreNum)
+df.norm <- predict(PreNum, df.numeric)
+
+# (5) encoding for categorical predictors
+#make categorical variables get separate into 0 and 1. 
+df.dummies <- as.data.frame(model.matrix(~.-1, df.factor))
+dim(df.dummies)
+
+# (6) remove levels with few or no observation
+#check if some values are absent in test set
+absent.test <- which(colSums(df.dummies[(nrow(house[!is.na(house$SalePrice),])+1):nrow(house),])==0)
+colnames(df.dummies[absent.test])
+# remove them
+df.dummies <- df.dummies[,-absent.test]
+
+#check if some values are absent in train set
+absent.train <- which(colSums(df.dummies[1:nrow(house[!is.na(house$SalePrice),]),])==0)
+colnames(df.dummies[absent.train])
+#remove them
+df.dummies <- df.dummies[,-absent.train]
+#also check if some variables with less than 10 '1' in the train set.
+few.train <- which(colSums(df.dummies[1:nrow(house[!is.na(house$SalePrice),]),])<10)
+colnames(df.dummies[few.train])
+#remove them
+df.dummies <- df.dummies[,-few.train]
+
+dim(df.dummies)
+#combine df.norm and df.dummies
+combined <- cbind(df.norm, df.dummies)
+
+
+# (7) Dealing with the skewness of SalePrice
+skew(house$SalePrice)
+qqnorm(house$SalePrice)
+qqline(house$SalePrice)
+# it is not normally distributed. we should take it log to fix it.
+house$SalePrice <- log(house$SalePrice)
+skew(house$SalePrice)
+qqnorm(house$SalePrice)
+qqline(house$SalePrice)
+
+
+```
+
+### Modeling
+```{r}
+# (1) make train and test set
+train2 <- combined[!is.na(house$SalePrice),]
+test2 <- combined[is.na(house$SalePrice),]
+
+# (2) LASSO modeling
+set.seed(2018)
+x= model.matrix(SalePrice~., train2)
+
+lasso_mod <- train(x=train1, y=all$SalePrice[!is.na(all$SalePrice)], method='glmnet', trControl= my_control, tuneGrid=lassoGrid) 
+
+lasso.mod <- glmnet(train2,house$SalePrice[!is.na(house$SalePrice)], alpha=1, lambda = seq(0.001,0.1,0.0005))
+```
+
